@@ -1,0 +1,369 @@
+// C++ 大厂求职学习管理系统 - Prisma Schema
+// 对应 Prompt 第三十四~三十九节数据模型设计
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+// ============== 用户与设置 ==============
+model User {
+  id               String    @id @default(cuid())
+  username         String    @unique       // 登录名
+  passwordHash     String                   // bcrypt 哈希
+  name             String    @default("Learner")
+  // 复习占比（默认 0.6 = 60% 复习 / 40% 新知）
+  reviewRatio      Float     @default(0.6)
+  // 每日推荐学习时长（分钟）
+  dailyGoalMinutes Int       @default(120)
+  // 主题偏好：dark/light + 主题色 blue/purple/pink/green
+  theme            String    @default("dark:purple") // e.g. "dark:purple" "light:green"
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  // 反向关系
+  topics           Topic[]
+  knowledgeCards   KnowledgeCard[]
+  leetcodeProblems LeetcodeProblem[]
+  learningSessions LearningSession[]
+  dailyReviews     DailyReview[]
+  weeklyReviews    WeeklyReview[]
+  resources        Resource[]
+  projects         Project[]
+  tags             Tag[]
+  patterns         AlgorithmPattern[]
+}
+
+// ============== 知识点体系 ==============
+model Topic {
+  id              String          @id @default(cuid())
+  userId          String?
+  user            User?           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  // 一级模块名称: C++ / LeetCode / OS / ...
+  name            String
+  // 父主题（用于二级分类）
+  parentId        String?
+  parent          Topic?          @relation("TopicHierarchy", fields: [parentId], references: [id])
+  children        Topic[]         @relation("TopicHierarchy")
+  // 图标（lucide-react 名称）
+  icon            String?
+  // 排序
+  order           Int             @default(0)
+  // 描述
+  description     String?
+  knowledgeCards  KnowledgeCard[]
+  createdAt       DateTime        @default(now())
+  updatedAt       DateTime        @updatedAt
+}
+
+model KnowledgeCard {
+  id              String           @id @default(cuid())
+  userId          String?
+  user            User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title           String
+  topicId         String
+  topic           Topic            @relation(fields: [topicId], references: [id], onDelete: Cascade)
+
+  // 结构化字段（对应 Prompt 第五节）
+  problemSolved   String?          // 它解决什么问题？
+  corePrinciple   String?          // 核心原理
+  differences     String?          // 与类似概念的区别
+  commonMistakes  String?          // 我最容易犯什么错误？
+  codeExample     String?          // 最小代码示例
+  interviewQs     String?          // 面试问题
+
+  // 元数据
+  source          String?          // 来源: 书籍/视频/博客/LeetCode/项目/其他
+  difficulty      Int              @default(3)  // 1-5
+  tags            String           @default("") // 逗号分隔 tag 名称
+
+  // 关联到本地 PDF（book_pdf 目录下）
+  pdfPath         String?          // 例: "C++ Primer 中文版（第 5 版） ( etc.) (z-library.sk, 1lib.sk, z-lib.sk).pdf"
+  pdfPage         Int?             // 对应书中的页码（点击跳转到该页）
+
+  // Spaced Repetition 字段（对应 Prompt 第七节）
+  masteryScore    Float            @default(0)
+  reviewCount     Int              @default(0)
+  successCount    Int              @default(0)
+  failureCount    Int              @default(0)
+  interval        Int              @default(0)     // 当前间隔（天）
+  ease            Float            @default(2.5)   // SM-2 难度系数
+  memoryStrength  Float            @default(0)     // 综合记忆强度 0-1
+  lastReviewedAt  DateTime?
+  nextReviewAt    DateTime         @default(now()) // 新建立即可复习
+
+  // 关联
+  recallQuestions RecallQuestion[]
+  reviewRecords   ReviewRecord[]
+  dailyReviewItems DailyReviewItem[]
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  @@index([topicId])
+  @@index([nextReviewAt])
+  @@index([masteryScore])
+}
+
+model RecallQuestion {
+  id              String         @id @default(cuid())
+  knowledgeCardId String
+  knowledgeCard   KnowledgeCard  @relation(fields: [knowledgeCardId], references: [id], onDelete: Cascade)
+  question        String
+  answer          String
+  difficulty      Int            @default(3)
+  lastResult      String?        // AGAIN/HARD/GOOD/EASY
+  reviewCount     Int            @default(0)
+  nextReviewAt    DateTime       @default(now())
+  reviewRecords   ReviewRecord[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
+}
+
+model ReviewRecord {
+  id                String           @id @default(cuid())
+  knowledgeCardId   String
+  knowledgeCard     KnowledgeCard    @relation(fields: [knowledgeCardId], references: [id], onDelete: Cascade)
+  recallQuestionId  String?
+  recallQuestion    RecallQuestion?  @relation(fields: [recallQuestionId], references: [id], onDelete: SetNull)
+  // 自评结果: AGAIN(0) / HARD(1) / GOOD(2) / EASY(3)
+  result            String
+  selfScore         Int              // 0-3
+  reviewedAt        DateTime         @default(now())
+  // 复习后间隔
+  intervalAfter     Int
+
+  @@index([knowledgeCardId])
+  @@index([reviewedAt])
+}
+
+// ============== LeetCode ==============
+model LeetcodeProblem {
+  id                     String              @id @default(cuid())
+  userId                 String?
+  user                   User?               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  leetcodeNumber         Int
+  title                  String
+  difficulty             String              // Easy / Medium / Hard
+  url                    String?
+  // Pattern 分类（对应 Prompt 第十三节 20 个 Pattern）
+  pattern                String
+  // 状态：NotStarted / Attempted / SolvedWithHint / SolvedAfterSolution / Reproduced / SolvedIndependently / Mastered
+  status                 String              @default("NotStarted")
+  masteryScore           Float               @default(0)
+  // 关联到通用 KnowledgeCard（可选，用于跨系统追踪）
+  knowledgeCardId        String?
+
+  // 大厂常考标记（用于排序/筛选）
+  isHot                  Boolean             @default(false)
+  // 来源书目：如 "剑指Offer" / "LeetCode" / "C++Primer" 等
+  source                 String?             // 来源: 书籍/视频/博客/LeetCode/项目/其他
+  pdfPath                String?             // 对应 PDF 路径
+  pdfPage                Int?                // 对应 PDF 页码
+  chapter                String?             // 所属章节
+
+  // 统计字段
+  attemptCount           Int                 @default(0)
+  independentSolveCount  Int                 @default(0)
+  usedHintCount          Int                 @default(0)
+  usedSolutionCount      Int                 @default(0)
+  totalTime              Int                 @default(0) // 总耗时（分钟）
+
+  // 间隔重复
+  interval               Int                 @default(0)
+  ease                   Float               @default(2.5)
+  lastReviewedAt         DateTime?
+  nextReviewAt           DateTime            @default(now())
+
+  attempts               LeetcodeAttempt[]
+  reviews                LeetcodeReview[]
+  dailyReviewItems       DailyReviewItem[]
+  createdAt              DateTime            @default(now())
+  updatedAt              DateTime            @updatedAt
+
+  @@unique([userId, leetcodeNumber])
+  @@index([pattern])
+  @@index([status])
+  @@index([nextReviewAt])
+}
+
+model LeetcodeAttempt {
+  id                  String          @id @default(cuid())
+  problemId           String
+  problem             LeetcodeProblem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  date                DateTime        @default(now())
+  duration            Int             // 耗时（分钟）
+
+  // 做题结果
+  solved              Boolean
+  usedHint            Boolean         @default(false)
+  usedSolution        Boolean         @default(false)
+  // 是否独立完成
+  independent         Boolean         @default(false)
+
+  // 复盘字段（对应 Prompt 第十一节）
+  algorithm           String?         // 最终使用什么算法
+  timeComplexity      String?
+  spaceComplexity     String?
+  whyFailed           String?         // 我第一次为什么没有想到？
+  mistakeType         String?         // 错误类型
+  patternRecognition String?         // Pattern 识别
+  nextTimeSignal      String?         // 下次识别信号
+  notes               String?
+
+  @@index([problemId])
+  @@index([date])
+}
+
+model LeetcodeReview {
+  id           String          @id @default(cuid())
+  problemId    String
+  problem      LeetcodeProblem @relation(fields: [problemId], references: [id], onDelete: Cascade)
+  reviewedAt   DateTime        @default(now())
+  result       String          // AGAIN / HARD / GOOD / EASY
+  intervalAfter Int
+
+  @@index([problemId])
+}
+
+// ============== Pattern & 学习会话 ==============
+model AlgorithmPattern {
+  id           String  @id @default(cuid())
+  userId       String?
+  user         User?   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name         String
+  // 顺序（1-20）
+  order        Int
+  // 适用场景
+  scenario     String?
+  // 识别信号
+  signals      String?
+  // 通用模板
+  template     String?
+  // 描述
+  description  String?
+  // 常见错误
+  commonErrors String?
+  masteryScore Float   @default(0)
+
+  @@unique([userId, name])
+}
+
+model LearningSession {
+  id             String       @id @default(cuid())
+  userId         String?
+  user           User?        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  startTime      DateTime     @default(now())
+  endTime        DateTime?
+  duration       Int          @default(0)  // 分钟
+  // REVIEW / LEARN / PRACTICE / REFLECT
+  sessionType    String
+  topics         String       @default("") // 涉及的 topic ids
+  reviewCount    Int          @default(0)
+  newTopicCount  Int          @default(0)
+  leetcodeCount  Int          @default(0)
+  reflection     String?
+}
+
+model DailyReview {
+  id              String           @id @default(cuid())
+  userId          String?
+  user            User?            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  date            DateTime
+  totalStudyTime  Int              @default(0)        // 分钟
+  topThree        String?                            // 最重要的三个知识点
+  stuckAt         String?                            // 卡在哪里
+  biggestMistake  String?                            // 最大错误
+  tomorrowFocus   String?                            // 明天重点
+  items           DailyReviewItem[]
+
+  @@unique([userId, date])
+}
+
+model DailyReviewItem {
+  id              String           @id @default(cuid())
+  dailyReviewId   String
+  dailyReview     DailyReview      @relation(fields: [dailyReviewId], references: [id], onDelete: Cascade)
+  knowledgeCardId String?
+  knowledgeCard   KnowledgeCard?   @relation(fields: [knowledgeCardId], references: [id], onDelete: SetNull)
+  leetcodeId      String?
+  leetcode        LeetcodeProblem? @relation(fields: [leetcodeId], references: [id], onDelete: SetNull)
+  itemType        String           // REVIEW / PRACTICE / LEARN
+  completed       Boolean          @default(false)
+}
+
+model WeeklyReview {
+  id             String   @id @default(cuid())
+  userId         String?
+  user           User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weekStart      DateTime
+  weekEnd        DateTime
+  closedBookTest String?  // JSON: {questions, answers}
+  summary        String?
+  totalStudyTime Int      @default(0)
+  recallRate     Float    @default(0)
+  createdAt      DateTime @default(now())
+}
+
+// ============== 资源 & 项目 ==============
+model Resource {
+  id              String   @id @default(cuid())
+  userId          String?
+  user            User?    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            String   // book / video / course / blog / doc
+  title           String
+  url             String?
+  author          String?
+  progress        Int      @default(0) // 0-100
+  chapter         String?
+  notes           String?
+  relatedCardIds  String   @default("") // 关联的 KnowledgeCard ids
+
+  // PDF 文件路径（book_pdf 目录下文件名）
+  pdfPath         String?
+  totalPages      Int?     // PDF 总页数（手动或脚本写入）
+  currentPage     Int?     // 当前读到哪页
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+}
+
+model Project {
+  id            String        @id @default(cuid())
+  userId        String?
+  user          User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name          String
+  github        String?
+  techStack     String?       // 逗号分隔
+  goal          String?
+  modules       String?       // 逗号分隔
+  status        String        @default("Planning") // Planning / InProgress / Done
+  notes         ProjectNote[]
+  createdAt     DateTime      @default(now())
+  updatedAt     DateTime      @updatedAt
+}
+
+model ProjectNote {
+  id          String   @id @default(cuid())
+  projectId   String
+  project     Project  @relation(fields: [projectId], references: [id], onDelete: Cascade)
+  type        String   // bug / tech-difficulty / lesson / interview-q
+  title       String
+  content     String
+  createdAt   DateTime @default(now())
+}
+
+// ============== Tag ==============
+model Tag {
+  id     String @id @default(cuid())
+  userId String?
+  user   User?  @relation(fields: [userId], references: [id], onDelete: Cascade)
+  name   String
+  color  String @default("#3b82f6")
+
+  @@unique([userId, name])
+}
